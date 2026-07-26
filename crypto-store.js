@@ -1,4 +1,3 @@
-// Handles per-user salt generation, PBKDF2 key derivation, and AES-GCM encryption
 export class SecureUserStore {
   constructor(dbName = 'FinTrackSecureDB') {
     this.dbName = dbName;
