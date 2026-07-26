@@ -4,18 +4,27 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   
-  <!-- Relative assets for GitHub Pages / subpaths -->
+  <!-- Explicit Base Tag for GitHub Pages -->
+  <base href="/fintrack-PWA/" />
+
+  <!-- Relative asset links (no leading slashes) -->
   <link rel="manifest" href="manifest.json" />
   <link rel="stylesheet" href="styles.css" />
   <title>FinTrack PWA</title>
 </head>
 <body>
   <div id="app">
-    <!-- PIN Unlock Overlay -->
+    <!-- Security PIN Modal wrapped in a form to fix Chrome DOM warning -->
     <div id="pinModal" class="modal hidden">
       <form id="pinForm" class="modal-content" onsubmit="return false;">
         <h3>Security PIN Required</h3>
-        <input type="password" id="pinInput" maxlength="6" placeholder="Enter PIN" autocomplete="current-password" />
+        <input 
+          type="password" 
+          id="pinInput" 
+          maxlength="6" 
+          placeholder="Enter PIN" 
+          autocomplete="current-password" 
+        />
         <button type="submit" id="pinUnlockBtn">Unlock</button>
       </form>
     </div>
@@ -30,16 +39,17 @@
       </div>
     </div>
 
-    <!-- Main Application UI -->
+    <!-- Application Structure -->
     <header>
       <h1>FinTrack</h1>
       <div id="userPill">Not Logged In</div>
     </header>
     <main id="mainContent">
-      <!-- Dynamic views render here -->
+      <!-- Content renders dynamically via app.js -->
     </main>
   </div>
 
+  <!-- Relative JS Module import -->
   <script type="module" src="app.js"></script>
 </body>
 </html>
