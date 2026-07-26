@@ -126,3 +126,7 @@ async function renderDashboard() {
 }
 
 initApp();
+// Register SW with relative path
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js');
+}
