@@ -1,7 +1,21 @@
 export class FinTrackAPIClient {
   constructor(baseUrl = '') {
-    this.baseUrl = baseUrl;
+    this.setBaseUrl(baseUrl);
     this.token = null;
+  }
+
+  setBaseUrl(url) {
+    if (!url) {
+      this.baseUrl = '';
+      return;
+    }
+    // Clean trailing slash
+    let cleanUrl = url.replace(/\/+$/, '');
+    // Ensure protocol is present
+    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
+      cleanUrl = 'https://' + cleanUrl;
+    }
+    this.baseUrl = cleanUrl;
   }
 
   setToken(token) {
@@ -9,6 +23,10 @@ export class FinTrackAPIClient {
   }
 
   async request(endpoint, method = 'GET', body = null) {
+    if (!this.baseUrl) {
+      throw new Error('Server URL is not configured.');
+    }
+
     const headers = { 'Content-Type': 'application/json' };
     if (this.token) {
       headers['Authorization'] = `Bearer ${this.token}`;
@@ -17,21 +35,33 @@ export class FinTrackAPIClient {
     const config = { method, headers };
     if (body) config.body = JSON.stringify(body);
 
-    const res = await fetch(`${this.baseUrl}/index.php/apps/fintrack/api/v1/${endpoint}`, config);
+    const fullUrl = `${this.baseUrl}/index.php/apps/fintrack/api/v1/${endpoint}`;
+    const res = await fetch(fullUrl, config);
+    
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ message: 'HTTP Error' }));
+      const err = await res.json().catch(() => ({ message: `HTTP Error ${res.status}` }));
       throw new Error(err.message || res.statusText);
     }
     return res.json();
   }
 
   // Auth
-  login(username, password) {
-    return fetch(`${this.baseUrl}/index.php/apps/fintrack/api/v1/login`, {
+  async login(serverUrl, username, password) {
+    this.setBaseUrl(serverUrl);
+    const fullUrl = `${this.baseUrl}/index.php/apps/fintrack/api/v1/login`;
+    
+    const res = await fetch(fullUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
-    }).then(r => r.json());
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ message: `Login failed with status ${res.status}` }));
+      throw new Error(err.message || res.statusText);
+    }
+    
+    return res.json();
   }
 
   // Accounts
