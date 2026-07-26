@@ -5,14 +5,14 @@ let deferredPrompt = null;
 const secureStore = new SecureUserStore();
 const api = new FinTrackAPIClient();
 
-// Register Service Worker with relative path
+// Register Service Worker
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').catch((err) => {
     console.error('Service Worker registration failed:', err);
   });
 }
 
-// PWA Install Prompt Logic
+// PWA Install Banner Logic
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredPrompt = e;
@@ -45,7 +45,7 @@ document.getElementById('btnInstallNo').addEventListener('click', () => {
   document.getElementById('pwaInstallPrompt').classList.add('hidden');
 });
 
-// App Entrypoint & Security Lifecycle
+// App Initialization
 async function initApp() {
   await secureStore.init();
   const activeUser = localStorage.getItem('active_user_id');
@@ -57,14 +57,15 @@ async function initApp() {
     document.getElementById('pinForm').onsubmit = async (e) => {
       e.preventDefault();
       const pin = document.getElementById('pinInput').value;
-      const data = await secureStore.getDecryptedData(activeUser, pin, 'user_session');
-      if (data) {
-        api.setToken(data.token);
+      const session = await secureStore.getDecryptedData(activeUser, pin, 'user_session');
+      if (session && session.token && session.serverUrl) {
+        api.setBaseUrl(session.serverUrl);
+        api.setToken(session.token);
         document.getElementById('userPill').textContent = `User: ${activeUser}`;
         document.getElementById('pinModal').classList.add('hidden');
         renderDashboard();
       } else {
-        alert('Invalid PIN');
+        alert('Invalid PIN or expired session.');
       }
     };
   } else {
@@ -74,37 +75,46 @@ async function initApp() {
 
 function renderLogin() {
   const container = document.getElementById('mainContent');
+  const savedServer = localStorage.getItem('last_server_url') || '';
+
   container.innerHTML = `
     <form id="loginForm" class="login-box" onsubmit="return false;">
-      <h2>Login</h2>
+      <h2>Connect to Nextcloud</h2>
+      <input type="url" id="serverUrl" placeholder="https://nextcloud.example.com" value="${savedServer}" required />
       <input type="text" id="username" placeholder="Username" autocomplete="username" required />
       <input type="password" id="password" placeholder="Password" autocomplete="current-password" required />
-      <input type="password" id="pin" placeholder="Set App PIN (Optional)" autocomplete="new-password" />
+      <input type="password" id="pin" placeholder="Set App Lock PIN (Optional)" autocomplete="new-password" />
       <button type="submit" id="loginBtn">Sign In</button>
     </form>
   `;
 
   document.getElementById('loginForm').onsubmit = async (e) => {
     e.preventDefault();
-    const u = document.getElementById('username').value;
+    const serverUrl = document.getElementById('serverUrl').value.trim();
+    const u = document.getElementById('username').value.trim();
     const p = document.getElementById('password').value;
     const pin = document.getElementById('pin').value;
 
     try {
-      const res = await api.login(u, p);
+      const res = await api.login(serverUrl, u, p);
       if (res.token) {
         api.setToken(res.token);
         localStorage.setItem('active_user_id', u);
+        localStorage.setItem('last_server_url', serverUrl);
         document.getElementById('userPill').textContent = `User: ${u}`;
         
         if (pin) {
           localStorage.setItem('pin_enabled', 'true');
-          await secureStore.saveEncryptedData(u, pin, 'user_session', { token: res.token, user: u });
+          await secureStore.saveEncryptedData(u, pin, 'user_session', { 
+            token: res.token, 
+            user: u, 
+            serverUrl 
+          });
         }
         renderDashboard();
       }
     } catch (err) {
-      alert('Login Failed: ' + err.message);
+      alert('Connection Failed: ' + err.message);
     }
   };
 }
