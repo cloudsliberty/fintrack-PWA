@@ -22,7 +22,14 @@ self.addEventListener('activate', (event) => {
   );
   self.clients.claim();
 });
-
+const CACHE_NAME = 'fintrack-v1';
+const STATIC_ASSETS = [
+  './',
+  './index.html',
+  './app.js',
+  './styles.css',
+  './manifest.json'
+];
 self.addEventListener('fetch', (event) => {
   // Never cache raw REST API responses in transparent SW CacheStorage 
   // API responses are encrypted client-side and saved into IndexedDB directly.
