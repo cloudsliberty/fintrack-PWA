@@ -130,3 +130,16 @@ initApp();
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js');
 }
+function renderLogin() {
+  const container = document.getElementById('mainContent');
+  container.innerHTML = `
+    <form class="login-box" onsubmit="return false;">
+      <h2>Login</h2>
+      <input type="text" id="username" placeholder="Username" autocomplete="username" />
+      <input type="password" id="password" placeholder="Password" autocomplete="current-password" />
+      <input type="password" id="pin" placeholder="Set App PIN (Optional)" autocomplete="new-password" />
+      <button type="submit" id="loginBtn">Sign In</button>
+    </form>
+  `;
+  // ... rest of your code
+}
