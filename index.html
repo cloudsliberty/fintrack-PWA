@@ -3,24 +3,26 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <link rel="manifest" href="/manifest.json" />
-  <link rel="stylesheet" href="/styles.css" />
+  
+  <!-- Relative assets for GitHub Pages / subpaths -->
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="styles.css" />
   <title>FinTrack PWA</title>
 </head>
 <body>
   <div id="app">
     <!-- PIN Unlock Overlay -->
     <div id="pinModal" class="modal hidden">
-      <div class="modal-content">
+      <form id="pinForm" class="modal-content" onsubmit="return false;">
         <h3>Security PIN Required</h3>
-        <input type="password" id="pinInput" maxlength="6" placeholder="Enter PIN" />
-        <button id="pinUnlockBtn">Unlock</button>
-      </div>
+        <input type="password" id="pinInput" maxlength="6" placeholder="Enter PIN" autocomplete="current-password" />
+        <button type="submit" id="pinUnlockBtn">Unlock</button>
+      </form>
     </div>
 
-    <!-- PWA Install Modal -->
+    <!-- PWA Install Banner -->
     <div id="pwaInstallPrompt" class="pwa-prompt hidden">
-      <p>Install FinTrack on your home screen for quick offline access.</p>
+      <p>Install FinTrack on your home screen for quick access.</p>
       <div class="pwa-actions">
         <button id="btnInstallYes" class="btn-primary">Install</button>
         <button id="btnInstallLater" class="btn-secondary">Later</button>
@@ -28,15 +30,16 @@
       </div>
     </div>
 
-    <!-- Main Navigation & Workspace -->
+    <!-- Main Application UI -->
     <header>
       <h1>FinTrack</h1>
       <div id="userPill">Not Logged In</div>
     </header>
     <main id="mainContent">
-      <!-- Views dynamically rendered via app.js -->
+      <!-- Dynamic views render here -->
     </main>
   </div>
-  <script type="module" src="/app.js"></script>
+
+  <script type="module" src="app.js"></script>
 </body>
 </html>
