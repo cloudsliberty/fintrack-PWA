@@ -1,59 +1,23 @@
 import { SecureUserStore } from './crypto-store.js';
 import { FinTrackAPIClient } from './api.js';
 
-let deferredPrompt = null;
 const secureStore = new SecureUserStore();
 const api = new FinTrackAPIClient();
 
-// Register Service Worker
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js').catch((err) => {
-    console.error('Service Worker registration failed:', err);
-  });
-}
-
-// PWA Install Banner Logic
-window.addEventListener('beforeinstallprompt', (e) => {
-  e.preventDefault();
-  deferredPrompt = e;
-
-  const choice = localStorage.getItem('pwa_install_choice');
-  if (choice !== 'no' && choice !== 'later_dismissed') {
-    document.getElementById('pwaInstallPrompt').classList.remove('hidden');
-  }
-});
-
-document.getElementById('btnInstallYes').addEventListener('click', async () => {
-  if (deferredPrompt) {
-    deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === 'accepted') {
-      localStorage.setItem('pwa_install_choice', 'installed');
-    }
-    deferredPrompt = null;
-  }
-  document.getElementById('pwaInstallPrompt').classList.add('hidden');
-});
-
-document.getElementById('btnInstallLater').addEventListener('click', () => {
-  localStorage.setItem('pwa_install_choice', 'later_dismissed');
-  document.getElementById('pwaInstallPrompt').classList.add('hidden');
-});
-
-document.getElementById('btnInstallNo').addEventListener('click', () => {
-  localStorage.setItem('pwa_install_choice', 'no');
-  document.getElementById('pwaInstallPrompt').classList.add('hidden');
-});
-
-// App Initialization
 async function initApp() {
   await secureStore.init();
   const activeUser = localStorage.getItem('active_user_id');
   const isPinEnabled = localStorage.getItem('pin_enabled') === 'true';
 
+  // Resume active polling session if user was redirected back from Nextcloud
+  const pendingPoll = localStorage.getItem('nc_poll_info');
+  if (pendingPoll) {
+    await resumeLoginFlow(JSON.parse(pendingPoll));
+    return;
+  }
+
   if (isPinEnabled && activeUser) {
     document.getElementById('pinModal').classList.remove('hidden');
-    
     document.getElementById('pinForm').onsubmit = async (e) => {
       e.preventDefault();
       const pin = document.getElementById('pinInput').value;
@@ -65,7 +29,7 @@ async function initApp() {
         document.getElementById('pinModal').classList.add('hidden');
         renderDashboard();
       } else {
-        alert('Invalid PIN or expired session.');
+        alert('Invalid PIN.');
       }
     };
   } else {
@@ -78,79 +42,125 @@ function renderLogin() {
   const savedServer = localStorage.getItem('last_server_url') || '';
 
   container.innerHTML = `
-    <form id="loginForm" class="login-box" onsubmit="return false;">
-      <h2>Nextcloud Login</h2>
+    <div class="login-box">
+      <h2>Connect to Nextcloud</h2>
+      <p>You will be redirected to your Nextcloud instance to sign in and grant access.</p>
       <input type="url" id="serverUrl" placeholder="https://cloud.example.com" value="${savedServer}" required />
-      <input type="text" id="username" placeholder="Nextcloud Username" autocomplete="username" required />
-      <input type="password" id="password" placeholder="Password / App Password" autocomplete="current-password" required />
-      <p class="hint">Recommended: Use an App Password from Nextcloud (Settings > Security > Devices & sessions)</p>
       <input type="password" id="pin" placeholder="Set App Lock PIN (Optional)" autocomplete="new-password" />
-      <button type="submit" id="loginBtn">Authenticate</button>
-    </form>
+      <button type="button" id="startLoginBtn">Authorize with Nextcloud</button>
+    </div>
   `;
 
-  document.getElementById('loginForm').onsubmit = async (e) => {
-    e.preventDefault();
+  document.getElementById('startLoginBtn').onclick = async () => {
     const serverUrl = document.getElementById('serverUrl').value.trim();
-    const u = document.getElementById('username').value.trim();
-    const p = document.getElementById('password').value;
     const pin = document.getElementById('pin').value;
 
+    if (!serverUrl) {
+      alert('Please enter your Nextcloud server URL.');
+      return;
+    }
+
     try {
-      // Validate Nextcloud credentials against API
-      await api.testConnection(serverUrl, u, p);
+      // Step 1: Initialize Login Flow v2
+      const flowData = await api.initLoginFlowV2(serverUrl);
 
-      localStorage.setItem('active_user_id', u);
+      // Save poll metadata locally before redirecting
+      const pollInfo = {
+        serverUrl,
+        pin,
+        token: flowData.poll.token,
+        endpoint: flowData.poll.endpoint
+      };
+      localStorage.setItem('nc_poll_info', JSON.stringify(pollInfo));
       localStorage.setItem('last_server_url', serverUrl);
-      document.getElementById('userPill').textContent = `User: ${u}`;
 
-      if (pin) {
-        localStorage.setItem('pin_enabled', 'true');
-        await secureStore.saveEncryptedData(u, pin, 'user_session', { 
-          username: u,
-          appPassword: p, 
-          serverUrl 
-        });
-      } else {
-        // Unencrypted persistence fallback for session without PIN
-        localStorage.setItem('pin_enabled', 'false');
-      }
+      // Step 2: Open login flow URL in a new tab or redirect
+      window.open(flowData.login, '_blank');
 
-      renderDashboard();
+      // Step 3: Start polling for approval
+      await resumeLoginFlow(pollInfo);
     } catch (err) {
-      alert('Authentication Failed: ' + err.message);
+      alert('Error initializing login flow: ' + err.message);
     }
   };
 }
 
+async function resumeLoginFlow(pollInfo) {
+  const container = document.getElementById('mainContent');
+  container.innerHTML = `
+    <div class="login-box">
+      <h2>Waiting for Nextcloud Authorization...</h2>
+      <p>Please complete the login in the opened Nextcloud window.</p>
+      <div class="spinner"></div>
+      <button id="cancelAuthBtn">Cancel</button>
+    </div>
+  `;
+
+  let isPolling = true;
+  document.getElementById('cancelAuthBtn').onclick = () => {
+    isPolling = false;
+    localStorage.removeItem('nc_poll_info');
+    renderLogin();
+  };
+
+  // Poll loop (attempts every 2 seconds for up to 20 minutes)
+  while (isPolling) {
+    try {
+      const result = await api.pollLoginFlowV2(pollInfo.endpoint, pollInfo.token);
+      
+      if (result && result.appPassword) {
+        localStorage.removeItem('nc_poll_info');
+        
+        const username = result.loginName;
+        const appPassword = result.appPassword;
+
+        api.setBaseUrl(pollInfo.serverUrl);
+        api.setCredentials(username, appPassword);
+
+        localStorage.setItem('active_user_id', username);
+        document.getElementById('userPill').textContent = `User: ${username}`;
+
+        if (pollInfo.pin) {
+          localStorage.setItem('pin_enabled', 'true');
+          await secureStore.saveEncryptedData(username, pollInfo.pin, 'user_session', {
+            username,
+            appPassword,
+            serverUrl: pollInfo.serverUrl
+          });
+        }
+
+        renderDashboard();
+        break;
+      }
+    } catch (err) {
+      alert('Authorization failed or timed out: ' + err.message);
+      localStorage.removeItem('nc_poll_info');
+      renderLogin();
+      break;
+    }
+
+    // Wait 2 seconds before next poll
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+}
+
 async function renderDashboard() {
   const container = document.getElementById('mainContent');
-  container.innerHTML = '<h2>Loading...</h2>';
+  container.innerHTML = '<h2>Loading Dashboard...</h2>';
   try {
     const dashboard = await api.getDashboard();
     container.innerHTML = `
       <h2>Dashboard Summary</h2>
       <div class="card">Total Balance: ${dashboard.total_balance ?? 0}</div>
-      <h3>Recent Transactions</h3>
-      <ul id="txList"></ul>
       <button id="logoutBtn" style="margin-top:20px;">Log Out</button>
     `;
 
     document.getElementById('logoutBtn').onclick = () => {
-      localStorage.removeItem('active_user_id');
-      localStorage.removeItem('pin_enabled');
+      localStorage.clear();
       location.reload();
     };
-
-    const txs = await api.getTransactions({ limit: 10 });
-    const txList = document.getElementById('txList');
-    txs.forEach(tx => {
-      const li = document.createElement('li');
-      li.textContent = `${tx.date} - ${tx.description || 'Transaction'}: $${tx.amount}`;
-      txList.appendChild(li);
-    });
   } catch (err) {
-    container.innerHTML = `<p class="error">Error loading dashboard: ${err.message}</p>`;
+    container.innerHTML = `<p class="error">Error: ${err.message}</p>`;
   }
 }
 
