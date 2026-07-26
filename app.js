@@ -5,12 +5,14 @@ let deferredPrompt = null;
 const secureStore = new SecureUserStore();
 const api = new FinTrackAPIClient();
 
-// Service Worker Registration
+// Register Service Worker with relative path
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js');
+  navigator.serviceWorker.register('./sw.js').catch((err) => {
+    console.error('Service Worker registration failed:', err);
+  });
 }
 
-// Installation Banner Handling
+// PWA Install Prompt Logic
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredPrompt = e;
@@ -51,11 +53,14 @@ async function initApp() {
 
   if (isPinEnabled && activeUser) {
     document.getElementById('pinModal').classList.remove('hidden');
-    document.getElementById('pinUnlockBtn').onclick = async () => {
+    
+    document.getElementById('pinForm').onsubmit = async (e) => {
+      e.preventDefault();
       const pin = document.getElementById('pinInput').value;
       const data = await secureStore.getDecryptedData(activeUser, pin, 'user_session');
       if (data) {
         api.setToken(data.token);
+        document.getElementById('userPill').textContent = `User: ${activeUser}`;
         document.getElementById('pinModal').classList.add('hidden');
         renderDashboard();
       } else {
@@ -70,16 +75,17 @@ async function initApp() {
 function renderLogin() {
   const container = document.getElementById('mainContent');
   container.innerHTML = `
-    <div class="login-box">
+    <form id="loginForm" class="login-box" onsubmit="return false;">
       <h2>Login</h2>
-      <input type="text" id="username" placeholder="Username" />
-      <input type="password" id="password" placeholder="Password" />
-      <input type="password" id="pin" placeholder="Set App PIN (Optional)" />
-      <button id="loginBtn">Sign In</button>
-    </div>
+      <input type="text" id="username" placeholder="Username" autocomplete="username" required />
+      <input type="password" id="password" placeholder="Password" autocomplete="current-password" required />
+      <input type="password" id="pin" placeholder="Set App PIN (Optional)" autocomplete="new-password" />
+      <button type="submit" id="loginBtn">Sign In</button>
+    </form>
   `;
 
-  document.getElementById('loginBtn').onclick = async () => {
+  document.getElementById('loginForm').onsubmit = async (e) => {
+    e.preventDefault();
     const u = document.getElementById('username').value;
     const p = document.getElementById('password').value;
     const pin = document.getElementById('pin').value;
@@ -89,6 +95,7 @@ function renderLogin() {
       if (res.token) {
         api.setToken(res.token);
         localStorage.setItem('active_user_id', u);
+        document.getElementById('userPill').textContent = `User: ${u}`;
         
         if (pin) {
           localStorage.setItem('pin_enabled', 'true');
@@ -126,20 +133,3 @@ async function renderDashboard() {
 }
 
 initApp();
-// Register SW with relative path
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js');
-}
-function renderLogin() {
-  const container = document.getElementById('mainContent');
-  container.innerHTML = `
-    <form class="login-box" onsubmit="return false;">
-      <h2>Login</h2>
-      <input type="text" id="username" placeholder="Username" autocomplete="username" />
-      <input type="password" id="password" placeholder="Password" autocomplete="current-password" />
-      <input type="password" id="pin" placeholder="Set App PIN (Optional)" autocomplete="new-password" />
-      <button type="submit" id="loginBtn">Sign In</button>
-    </form>
-  `;
-  // ... rest of your code
-}
