@@ -58,9 +58,9 @@ async function initApp() {
       e.preventDefault();
       const pin = document.getElementById('pinInput').value;
       const session = await secureStore.getDecryptedData(activeUser, pin, 'user_session');
-      if (session && session.token && session.serverUrl) {
+      if (session && session.username && session.appPassword && session.serverUrl) {
         api.setBaseUrl(session.serverUrl);
-        api.setToken(session.token);
+        api.setCredentials(session.username, session.appPassword);
         document.getElementById('userPill').textContent = `User: ${activeUser}`;
         document.getElementById('pinModal').classList.add('hidden');
         renderDashboard();
@@ -79,12 +79,13 @@ function renderLogin() {
 
   container.innerHTML = `
     <form id="loginForm" class="login-box" onsubmit="return false;">
-      <h2>Connect to Nextcloud</h2>
-      <input type="url" id="serverUrl" placeholder="https://nextcloud.example.com" value="${savedServer}" required />
-      <input type="text" id="username" placeholder="Username" autocomplete="username" required />
-      <input type="password" id="password" placeholder="Password" autocomplete="current-password" required />
+      <h2>Nextcloud Login</h2>
+      <input type="url" id="serverUrl" placeholder="https://cloud.example.com" value="${savedServer}" required />
+      <input type="text" id="username" placeholder="Nextcloud Username" autocomplete="username" required />
+      <input type="password" id="password" placeholder="Password / App Password" autocomplete="current-password" required />
+      <p class="hint">Recommended: Use an App Password from Nextcloud (Settings > Security > Devices & sessions)</p>
       <input type="password" id="pin" placeholder="Set App Lock PIN (Optional)" autocomplete="new-password" />
-      <button type="submit" id="loginBtn">Sign In</button>
+      <button type="submit" id="loginBtn">Authenticate</button>
     </form>
   `;
 
@@ -96,25 +97,28 @@ function renderLogin() {
     const pin = document.getElementById('pin').value;
 
     try {
-      const res = await api.login(serverUrl, u, p);
-      if (res.token) {
-        api.setToken(res.token);
-        localStorage.setItem('active_user_id', u);
-        localStorage.setItem('last_server_url', serverUrl);
-        document.getElementById('userPill').textContent = `User: ${u}`;
-        
-        if (pin) {
-          localStorage.setItem('pin_enabled', 'true');
-          await secureStore.saveEncryptedData(u, pin, 'user_session', { 
-            token: res.token, 
-            user: u, 
-            serverUrl 
-          });
-        }
-        renderDashboard();
+      // Validate Nextcloud credentials against API
+      await api.testConnection(serverUrl, u, p);
+
+      localStorage.setItem('active_user_id', u);
+      localStorage.setItem('last_server_url', serverUrl);
+      document.getElementById('userPill').textContent = `User: ${u}`;
+
+      if (pin) {
+        localStorage.setItem('pin_enabled', 'true');
+        await secureStore.saveEncryptedData(u, pin, 'user_session', { 
+          username: u,
+          appPassword: p, 
+          serverUrl 
+        });
+      } else {
+        // Unencrypted persistence fallback for session without PIN
+        localStorage.setItem('pin_enabled', 'false');
       }
+
+      renderDashboard();
     } catch (err) {
-      alert('Connection Failed: ' + err.message);
+      alert('Authentication Failed: ' + err.message);
     }
   };
 }
@@ -129,7 +133,15 @@ async function renderDashboard() {
       <div class="card">Total Balance: ${dashboard.total_balance ?? 0}</div>
       <h3>Recent Transactions</h3>
       <ul id="txList"></ul>
+      <button id="logoutBtn" style="margin-top:20px;">Log Out</button>
     `;
+
+    document.getElementById('logoutBtn').onclick = () => {
+      localStorage.removeItem('active_user_id');
+      localStorage.removeItem('pin_enabled');
+      location.reload();
+    };
+
     const txs = await api.getTransactions({ limit: 10 });
     const txList = document.getElementById('txList');
     txs.forEach(tx => {
