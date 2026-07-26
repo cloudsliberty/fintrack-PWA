@@ -1,7 +1,7 @@
 export class FinTrackAPIClient {
   constructor(baseUrl = '') {
     this.setBaseUrl(baseUrl);
-    this.token = null;
+    this.authHeader = null;
   }
 
   setBaseUrl(url) {
@@ -9,17 +9,17 @@ export class FinTrackAPIClient {
       this.baseUrl = '';
       return;
     }
-    // Clean trailing slash
     let cleanUrl = url.replace(/\/+$/, '');
-    // Ensure protocol is present
     if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
       cleanUrl = 'https://' + cleanUrl;
     }
     this.baseUrl = cleanUrl;
   }
 
-  setToken(token) {
-    this.token = token;
+  // Set standard HTTP Basic Auth header using Nextcloud credentials/App Password
+  setCredentials(username, passwordOrAppPassword) {
+    const credentials = `${username}:${passwordOrAppPassword}`;
+    this.authHeader = 'Basic ' + btoa(unescape(encodeURIComponent(credentials)));
   }
 
   async request(endpoint, method = 'GET', body = null) {
@@ -28,8 +28,8 @@ export class FinTrackAPIClient {
     }
 
     const headers = { 'Content-Type': 'application/json' };
-    if (this.token) {
-      headers['Authorization'] = `Bearer ${this.token}`;
+    if (this.authHeader) {
+      headers['Authorization'] = this.authHeader;
     }
 
     const config = { method, headers };
@@ -37,7 +37,11 @@ export class FinTrackAPIClient {
 
     const fullUrl = `${this.baseUrl}/index.php/apps/fintrack/api/v1/${endpoint}`;
     const res = await fetch(fullUrl, config);
-    
+
+    if (res.status === 401) {
+      throw new Error('Authentication failed. Invalid Nextcloud credentials or App Password.');
+    }
+
     if (!res.ok) {
       const err = await res.json().catch(() => ({ message: `HTTP Error ${res.status}` }));
       throw new Error(err.message || res.statusText);
@@ -45,23 +49,13 @@ export class FinTrackAPIClient {
     return res.json();
   }
 
-  // Auth
-  async login(serverUrl, username, password) {
+  // Validate connection against Nextcloud native user/dashboard API
+  async testConnection(serverUrl, username, passwordOrAppPassword) {
     this.setBaseUrl(serverUrl);
-    const fullUrl = `${this.baseUrl}/index.php/apps/fintrack/api/v1/login`;
+    this.setCredentials(username, passwordOrAppPassword);
     
-    const res = await fetch(fullUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password })
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ message: `Login failed with status ${res.status}` }));
-      throw new Error(err.message || res.statusText);
-    }
-    
-    return res.json();
+    // Testing authentication via dashboard route
+    return await this.request('dashboard');
   }
 
   // Accounts
