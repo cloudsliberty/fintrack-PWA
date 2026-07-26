@@ -25,7 +25,7 @@ export class FinTrackAPIClient {
     return res.json();
   }
 
-  // --- Auth & Profile ---
+  // Auth
   login(username, password) {
     return fetch(`${this.baseUrl}/index.php/apps/fintrack/api/v1/login`, {
       method: 'POST',
@@ -34,19 +34,19 @@ export class FinTrackAPIClient {
     }).then(r => r.json());
   }
 
-  // --- Accounts ---
+  // Accounts
   getAccounts() { return this.request('accounts'); }
   createAccount(data) { return this.request('accounts', 'POST', data); }
   updateAccount(id, data) { return this.request(`accounts/${id}`, 'PUT', data); }
   deleteAccount(id) { return this.request(`accounts/${id}`, 'DELETE'); }
 
-  // --- Categories ---
+  // Categories
   getCategories() { return this.request('categories'); }
   createCategory(data) { return this.request('categories', 'POST', data); }
   updateCategory(id, data) { return this.request(`categories/${id}`, 'PUT', data); }
   deleteCategory(id) { return this.request(`categories/${id}`, 'DELETE'); }
 
-  // --- Transactions ---
+  // Transactions
   getTransactions(params = {}) {
     const query = new URLSearchParams(params).toString();
     return this.request(`transactions${query ? '?' + query : ''}`);
@@ -55,23 +55,23 @@ export class FinTrackAPIClient {
   updateTransaction(id, data) { return this.request(`transactions/${id}`, 'PUT', data); }
   deleteTransaction(id) { return this.request(`transactions/${id}`, 'DELETE'); }
 
-  // --- Transfers ---
+  // Transfers
   getTransfers() { return this.request('transfers'); }
   createTransfer(data) { return this.request('transfers', 'POST', data); }
   deleteTransfer(id) { return this.request(`transfers/${id}`, 'DELETE'); }
 
-  // --- Budgets ---
+  // Budgets
   getBudgets() { return this.request('budgets'); }
   createBudget(data) { return this.request('budgets', 'POST', data); }
   updateBudget(id, data) { return this.request(`budgets/${id}`, 'PUT', data); }
   deleteBudget(id) { return this.request(`budgets/${id}`, 'DELETE'); }
 
-  // --- Recurring Transactions ---
+  // Recurring
   getRecurring() { return this.request('recurring'); }
   createRecurring(data) { return this.request('recurring', 'POST', data); }
   updateRecurring(id, data) { return this.request(`recurring/${id}`, 'PUT', data); }
   deleteRecurring(id) { return this.request(`recurring/${id}`, 'DELETE'); }
 
-  // --- Dashboard Summary ---
+  // Dashboard
   getDashboard() { return this.request('dashboard'); }
 }
