@@ -1,185 +1,283 @@
-# FinTrack PWA
+<p align="center">
+  <img src="screenshots/app.svg" alt="FinTrack" width="80">
+</p>
 
-An installable Progressive Web App for [FinTrack](https://github.com/cloudsliberty/fintrack) —
-the same Nextcloud REST API the Android app uses, with a fuller feature set (this covers every
-endpoint in the FinTrack manual; the Android app intentionally only exposes the basics).
+<h1 align="center">FinTrack</h1>
+<p align="center"><b>A full-featured personal finance manager, built as a Nextcloud app.</b></p>
 
-## ⚠️ Before you deploy this: CORS
+<p align="center">
+  <a href="https://github.com/cloudsliberty/fintrack/blob/main/LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue"></a>
+  <img alt="Nextcloud" src="https://img.shields.io/badge/Nextcloud-32-00679E">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.16.1-informational">
+</p>
 
-This is a static, standalone web app — it is **not** served from inside your Nextcloud instance.
-That means every API call it makes is a genuine cross-origin request, and browsers block those
-unless the server explicitly allows it via CORS headers. This is already fixed in the
-accompanying **Nextcloud app patch** (delivered separately — see its README), which does two
-things:
+Track accounts, income and expenses, transfers, budgets, and recurring
+transactions — with full multi-currency support — all stored in your own
+Nextcloud database. No third-party servers, no subscriptions, no ads.
 
-1. **Every FinTrack API controller** (`AccountsController`, `TransactionsController`,
-   `TransfersController`, `BudgetsController`, `CategoriesController`, `CurrenciesController`,
-   `RecurringController`, `SettingsController`, `LockController`, `ExternalController`) now
-   carries Nextcloud's built-in `#[CORS]` attribute on every endpoint. This only actually takes
-   effect for non-cookie-authenticated requests (HTTP Basic Auth with an app password, or
-   `ExternalController`'s token auth) — Nextcloud's own CORS middleware refuses to add
-   `Access-Control-Allow-Origin` for session/cookie-authenticated requests specifically to stop
-   CORS from becoming a CSRF hole, so this doesn't weaken same-origin session security at all.
-2. **A new `LoginProxyController`** relays Nextcloud core's Login Flow v2
-   (`/index.php/login/v2`) — which lives in core, not the FinTrack app, and so can't carry CORS
-   headers without patching core itself (unsupported, overwritten on every update). It makes the
-   two Login Flow v2 calls server-to-server instead (no browser involved on that hop, so no CORS
-   applies to it) and exposes them under FinTrack's own CORS-enabled routes:
-   `POST /apps/fintrack/login-proxy/init` and `POST /apps/fintrack/login-proxy/poll`. This PWA's
-   `api.js` already calls those proxy routes instead of core directly.
+---
 
-**You must install the accompanying Nextcloud app patch for this PWA to work at all** — without
-it, you'll see the exact "blocked by CORS policy" browser error, since nothing server-side allows
-the cross-origin request yet.
+## Table of contents
 
-**If you can't modify the Nextcloud app at all** (e.g. third-party/managed hosting), the fallback
-is web-server-level config instead — add `Access-Control-Allow-Origin` (scoped to this PWA's exact
-origin, not `*`) for `/index.php/login/v2` and `/index.php/apps/fintrack/` at your reverse
-proxy (Nginx/Apache), or simplest of all, host this PWA's files on the *same origin* as Nextcloud
-so no cross-origin request happens in the first place.
+- [Features](#features)
+- [Screenshots](#screenshots)
+- [Installation](#installation)
+- [Getting started](#getting-started)
+- [Feature guide](#feature-guide)
+  - [Accounts](#accounts)
+  - [Transactions](#transactions)
+  - [Transfers](#transfers)
+  - [Recurring transactions](#recurring-transactions)
+  - [Budgets](#budgets)
+  - [Categories & tags](#categories--tags)
+  - [Multi-currency](#multi-currency)
+  - [Dashboard & reports](#dashboard--reports)
+  - [CSV import / export](#csv-import--export)
+  - [External entry form & API](#external-entry-form--api)
+  - [Pin Lock](#pin-lock)
+  - [Settings, backup & reset](#settings-backup--reset)
+- [REST API](#rest-api)
+- [Android Client](#android-client)
+- [Data & privacy](#data--privacy)
+- [Requirements](#requirements)
+- [Contributing](#contributing)
+- [Support](#support)
+- [License](#license)
 
-## Running it
+---
 
-No build step — it's plain HTML/CSS/JS. Serve the folder with any static file server (it must be
-served over HTTP(S), not opened as a `file://` URL, or Service Workers and IndexedDB won't work
-correctly), e.g.:
+## Features
 
-```bash
-npx serve .
-# or
-python3 -m http.server 8080
-```
+- 🏦 **Asset, Liability, and Expense accounts** — track bank/cash balances alongside spending-category buckets
+- 💸 **Income & expense transactions** with categories, tags, notes, and multi-currency amounts
+- 🔁 **Inter-account transfers** with automatic currency conversion and fuzzy account search
+- ⏱ **Recurring transactions** (daily / weekly / monthly / yearly), posted automatically in the background
+- 📊 **Budgets** with per-category progress tracking
+- 🏷 **Categories and tags**, with rule-based auto-categorization on CSV import
+- 🌍 **Multi-currency support**, with per-transaction exchange-rate snapshots so past transactions never silently re-price when a rate changes later, plus [Frankfurter](https://api.frankfurter.dev) (free, no key) and [exchangerate.host](https://exchangerate.host) (fallback, free key) for online rate lookups, covering currencies like SAR and AED that the free tier alone doesn't
+- 📈 **Dashboard & reports** — spending by category, monthly trends, asset allocation, upcoming recurring items due in the next 5 days
+- 📥 **CSV / JSON import & export**, with automatic duplicate detection and a preview table before you commit
+- 🔗 **External entry form & token API** — add transactions from a phone home-screen shortcut, browser bookmarklet, or a script, without logging into Nextcloud
+- 🔒 **Optional app-local PIN lock**, layered on top of your Nextcloud login, with session timeout, lockout after repeated failures, and an admin-assisted reset flow if you forget it
+- 💾 **Automatic backup to Nextcloud Files** before any full data reset
+- 🗄 **All data stored in your own Nextcloud database** — nothing leaves your server except optional exchange-rate lookups
 
-Then open it in a browser and use the install prompt (or your browser's "Install app" /
-"Add to Home Screen" option) to install it.
+## Screenshots
 
-## Authentication
+<p align="center">
+  <img src="screenshots/dashboard.png" alt="FinTrack dashboard" width="800">
+</p>
 
-Uses Nextcloud's official **Login Flow v2** — the exact same protocol the Android app uses, not a
-custom shortcut — relayed through FinTrack's own `LoginProxyController` so it's reachable
-cross-origin (see the CORS section above):
+## Installation
 
-1. `POST /apps/fintrack/login-proxy/init` (which itself calls Nextcloud core's
-   `/index.php/login/v2` server-side) — returns a `login` URL and a `poll` token/endpoint.
-2. The `login` URL opens in a new tab where the person authenticates directly with Nextcloud (the
-   PWA never sees their Nextcloud password).
-3. The PWA polls `/apps/fintrack/login-proxy/poll` every 2 seconds; once the person approves, it
-   receives a Nextcloud **app password** (not their real password) plus their login name.
-4. Every subsequent API call uses HTTP Basic Auth with `loginName:appPassword` — identical to how
-   the Android app and Nextcloud's own official clients authenticate.
+1. Open **Nextcloud → Apps → Tools**, search for **FinTrack**, and click **Download and enable**.
+   - Or install manually: download the latest release from the [GitHub repo](https://github.com/cloudsliberty/fintrack), extract it into your Nextcloud `apps/` directory as `apps/fintrack`, then enable it under **Settings → Apps**.
+2. Requires **Nextcloud 32**.
+3. Open FinTrack from the Nextcloud app menu.
 
-The app password can be revoked at any time from Nextcloud's own **Settings → Security** page
-without affecting the person's main account password.
+## Getting started
 
-## Pin Lock — synced with the main app, not a separate PIN
+1. **Add an account** — go to *Accounts*, choose a type (Asset, Liability, or Expense) and currency.
+2. **Set your base currency** — *Settings → Currencies* — this is the currency all cross-account totals are shown in.
+3. **Add a transaction** — *Transactions → Add* — pick an account, amount, category, and (optionally) tags and notes.
+4. Optional next steps: set up a [budget](#budgets), a [recurring transaction](#recurring-transactions), the [external entry form](#external-entry-form--api) for quick mobile entry, or a [Pin Lock](#pin-lock) PIN.
 
-This PWA does **not** maintain its own separate PIN. It uses the exact same **Pin Lock** as
-FinTrack's Settings in the main (web) app (`LockController`/`LockService` server-side):
+## Feature guide
 
-- **First login, Pin Lock already enabled elsewhere:** the PWA asks for that existing PIN and
-  confirms it against the server (`POST api/lock/verify`) before setting this device up.
-- **First login, Pin Lock not enabled yet:** the PWA offers to enable it (`POST api/lock/setup`) —
-  doing so from the PWA enables it in the main app too, since it's the same setting.
-- **Every unlock** tries the server first when online (authoritative — reflects the real
-  enabled/timeout/lockout state no matter which client last changed it, and enforces the same
-  5-attempts/15-minute lockout as the main app). If the PIN was changed or disabled elsewhere
-  since this device last synced, the PWA detects that and asks for a fresh login rather than
-  trusting stale local state.
-- **Offline**, it falls back to a local check: the PIN-derived AES key either successfully
-  decrypts the locally-stored session or it doesn't (AES-GCM's authentication tag makes a wrong
-  key fail loudly) — no separate local PIN verifier needed at all.
-- **Settings → Pin Lock** in the PWA calls the same `setup`/`disable` endpoints — changing or
-  disabling it there changes it for the main app too, and vice versa.
+### Accounts
 
-## Security model — what's actually protected, and what isn't
+Four account types, each serving a different purpose:
 
-- **Per-user isolation.** Every Nextcloud identity (server + login name) that has ever signed in
-  on this device gets its own IndexedDB database (`fintrack_data_<hash>`), so multiple people
-  using FinTrack in the same browser profile never share storage.
-- **Encryption at rest.** Every value written to IndexedDB — the app password, cached
-  accounts/transactions/etc, settings — is AES-256-GCM encrypted. The key is derived via PBKDF2
-  (210,000 rounds, SHA-256) from the Pin Lock PIN (the same one from FinTrack's Settings in the
-  main app — see below). The PIN itself is never stored locally at all: a wrong PIN simply fails
-  to decrypt the stored session (AES-GCM's authentication tag makes this fail loudly, not
-  silently), which doubles as the offline PIN check — no separate local verifier hash needed.
-- **Every fresh page load re-asks for the PIN**, no exceptions — nothing sensitive is kept in
-  memory across a reload. A live, already-unlocked session also re-locks after the
-  server-configured timeout if the tab is hidden/backgrounded that long.
-- **The service worker never caches API responses** — only the static app shell (HTML/CSS/JS/
-  icons), specifically so no financial data ever lands in the browser's unencrypted Cache Storage.
-  All actual data caching goes through the encrypted IndexedDB layer above.
+| Type | Use for |
+|---|---|
+| **Asset** | Bank accounts, cash, savings, investments — anything you own |
+| **Liability** | Credit cards, loans — anything you owe |
+| **Revenue** | Income-source buckets (e.g. "Salary", "Freelance") for income-tracking without a real linked account |
+| **Expense** | Spending-category buckets (e.g. "Groceries", "Rent") for expense-tracking without a real linked account |
 
-**Honest limitation:** this is client-side JavaScript in a shared browser. Anyone who can execute
-arbitrary code in this page's origin — a malicious browser extension, a compromised browser, or
-physical access to an *already-unlocked* session — can, in principle, intercept the PIN as it's
-typed or the derived key while unlocked. What this setup *does* reliably stop: casual inspection
-of browser storage by someone else with access to the same machine/profile who doesn't know the
-PIN (they get ciphertext, not your balances), and any data bleed between different people's
-FinTrack logins in the same browser. It is not a substitute for full-disk encryption or a
-dedicated, trusted device — for genuinely sensitive use, the native Android app's OS-backed
-`EncryptedSharedPreferences` + optional biometric unlock is the stronger option.
+Each account has its own currency, icon, and color, and can be archived
+(marked inactive) without deleting its transaction history.
 
-## Install prompt
+### Transactions
 
-On supported browsers (Chromium-based; Firefox/Safari handle "add to home screen" differently and
-won't fire this prompt), the app listens for `beforeinstallprompt` and shows a **Yes / Later / No**
-dialog:
+Income or expense entries against an account: amount, description,
+category, tags (free-text, autosuggested from previously used tags),
+notes, and date. Foreign-currency accounts can carry a per-transaction
+**conversion rate**, frozen at entry time, so editing your currency table
+later never silently re-prices historical transactions.
 
-- **Yes** — triggers the native browser install prompt immediately.
-- **Later** — dismisses for 3 days, then asks again.
-- **No** — dismissed permanently (stored in `localStorage`, per-browser-profile).
+### Transfers
 
-## Feature coverage (vs. the Android app)
+Move money between two accounts in one step. If the accounts use
+different currencies, FinTrack converts the amount automatically (with an
+editable rate) and records both legs. Account pickers support fuzzy
+search for people with many accounts.
 
-Everything the Android app has, plus several options it intentionally leaves out:
+### Recurring transactions
 
-- **CSV bulk import** for transactions, with a downloadable template.
-- **Currencies CRUD** (code, name, symbol, manual conversion rate) — Android only lets you *pick*
-  an existing currency when creating an account.
-- **External API / Quick Add token management** — view/copy/regenerate your personal API token,
-  and a ready-to-copy Quick Add URL for bookmarklets/shortcuts. Not present in the Android app.
-- **Full Tags management** (add/remove global tags), not just per-transaction tagging.
-- **Recurring "Post now"** action, same as Android.
-- **Pin Lock setup/change/disable** directly from the PWA (synced with the main app — see above).
-- Every entity (Accounts, Transactions, Transfers, Budgets, Categories, Currencies, Recurring)
-  supports full CRUD with every field the API accepts.
+Set up a transaction template with a frequency (daily / weekly / monthly
+/ yearly) and FinTrack posts it automatically on schedule in the
+background — no need to open the app on the due date. The Dashboard
+surfaces everything due in the next 5 days so nothing is a surprise, and
+you can post an occurrence manually early if needed.
 
-### Real backend surface not yet wired up in this PWA
+### Budgets
 
-Inspecting the actual Nextcloud app's controllers turned up several endpoints this PWA doesn't
-have a UI for yet — noting them honestly rather than silently leaving them out:
+Set a spending limit per category (or overall) for a monthly or custom
+period, in any currency, and track progress with a live progress bar as
+transactions come in.
 
-- Transaction **trash/recycle bin** (`restoreFromTrash`, `destroyFromTrash`, `emptyTrash`) —
-  deletes are permanent in this PWA today, unlike the main app's soft-delete.
-- **Exchange rate lookup + API key testing** (`currencies/exchange-rate`,
-  `currencies/test-exchange-rate-key`) — currency conversion rates are manual-entry only here.
-- **Category export/import/create-defaults** (`categories/export`, `categories/import`,
-  `categories/create-defaults`).
-- **Tag rename** (`settings/rename-tag`) — this PWA can only add/remove tags, not rename one
-  in place across every transaction that uses it.
-- **Settings reset/restore** (`settings/reset`, `settings/restore`) and **category rules**.
-- Pin Lock's **forgot-PIN recovery flow** (`lock/reset-question`, `lock/reset-verify`,
-  `lock/request-admin-reset`) — if you truly forget your PIN, use the main app's recovery flow for
-  now; the PWA's own "forgot PIN" only removes this device's local copy, it doesn't reset the PIN
-  itself.
+### Categories & tags
 
-## File structure
+Categories are typed (income / expense / transfer) and carry an icon and
+color. Tags are free-text and shared across all your transactions with
+autosuggest. Categories can be exported/imported as a set, or generated
+from a sensible built-in default list (Groceries, Rent/Mortgage,
+Entertainment, etc.) with one click.
 
-```
-pwa/
-├── index.html
-├── manifest.json
-├── service-worker.js
-├── css/style.css
-├── js/
-│   ├── crypto.js     — Web Crypto (PBKDF2 + AES-GCM) helpers
-│   ├── db.js          — IndexedDB layer (device DB + per-identity encrypted DBs)
-│   ├── pin.js          — Pin Lock logic, synced with the server (see "Pin Lock" above)
-│   ├── api.js          — FinTrack REST API client + Nextcloud Login Flow v2 (via login-proxy)
-│   ├── app.js           — bootstrap, auth screens, router shell, generic form builder
-│   └── sections.js      — every entity's view (Dashboard, Transactions, Accounts, ...)
-└── icons/               — app icons (same "FT on blue" branding as the Android app)
-```
+### Multi-currency
 
-The corresponding Nextcloud app changes (CORS + `LoginProxyController`) ship as a separate
-deliverable — see its own README for exactly what changed and why.
+Add any number of currencies with a code, symbol, and exchange rate
+relative to your base currency. Rates can be entered manually or fetched
+online — FinTrack tries [Frankfurter](https://api.frankfurter.dev) first
+(free, no API key needed), then falls back to
+[exchangerate.host](https://exchangerate.host) (requires a free API key,
+set in *Settings → Currency Rate API Key*) for currency pairs Frankfurter
+doesn't cover, such as SAR or AED. Every transaction, transfer, and total
+correctly distinguishes between "priced in this account's currency" and
+"converted to your base currency for reporting" — and conversions always
+prefer a transaction's own frozen rate over today's live rate, so past
+totals stay stable.
+
+### Dashboard & reports
+
+- Account balances and net worth at a glance
+- Income vs. expense trends over time
+- Spending broken down by category
+- Asset allocation across accounts
+- Upcoming recurring transactions due soon
+- Filterable transaction reports by account, category, type, and date range
+
+### CSV import / export
+
+Export all transactions to CSV or a full JSON backup. Import a CSV with a
+downloadable template as a starting point; FinTrack shows a **column
+mapping summary** (which file header matched which field) and a **preview
+table** before anything is committed, with duplicate, update, and invalid
+rows clearly flagged. Optional rule-based auto-categorization fills in a
+category from the description when the file doesn't specify one. Every
+row that fails validation is reported individually — row number, the
+column that failed, and why — in an Import Results dialog after the
+import runs, instead of just a pass/fail count.
+
+Re-importing a file you've exported **updates** matching transactions
+instead of duplicating them: each transaction carries a permanent
+`unique-key(for-updating)` — simply its own row id — included
+automatically in every export. Leave that column blank on a row to create
+a new transaction instead.
+
+### External entry form & API
+
+*Settings → External Access* gives you a token and a shareable link that
+lets you (or an automation) add transactions **without logging into
+Nextcloud** — handy for a phone home-screen shortcut, a browser
+bookmarklet, or a script. Authenticated by a single API token rather than
+a Nextcloud session. See [REST API](#rest-api) below for the full
+request/response format. Both the token and the form link are masked in
+Settings and require your Pin Lock PIN to reveal or copy, if one is set.
+Opening the link offers to install itself as an app — titled
+"FinTrack - `<your-domain>`" with the same icon as the main app, so
+multiple instances stay distinguishable on your home screen — with an
+explicit Yes / Maybe Later / Cancel choice remembered locally in your
+browser.
+
+### Pin Lock
+
+An optional PIN layered on top of your normal Nextcloud login — useful on
+a shared device or if your Nextcloud session stays logged in. Includes an
+auto-lock timeout after inactivity, lockout after repeated failed
+attempts, a self-service security-question reset, and an
+admin-approval reset flow for when both the PIN and the security answer
+are forgotten.
+
+Once a PIN is set, choose exactly which actions require it under
+**Protected Actions**: exporting transactions to CSV, importing
+transactions from CSV, viewing Recently Deleted, and/or the External
+Entry Form — each is its own checkbox, on by default except the External
+Entry Form (opt-in, since it affects anyone with the form link, not just
+you).
+
+### Settings, backup & reset
+
+Configure base currency, tags, category rules, the external API token,
+and Pin Lock from one Settings screen. Deleting an account or transaction
+always asks for confirmation first — account deletion adds a 3-second
+cancellable countdown on top, since it can't be undone. Deleted
+transactions aren't gone immediately either: the last 100 land in
+**Recently Deleted** (a recycle bin) and can be restored any time, or
+purged for good. A full backup is written to Nextcloud Files automatically
+before any full data reset, and settings can be restored from a previous
+backup.
+
+## REST API
+
+FinTrack exposes two API surfaces:
+
+- **`/api/*`** — the full internal API (accounts, transactions, transfers,
+  budgets, categories, currencies, recurring rules, settings, summary).
+  Authenticated by your live Nextcloud session; this is what the web UI
+  itself uses.
+- **`/external/*`** — a smaller, public, **token-authenticated** API
+  (`X-FinTrack-Token` header) for quick transaction entry from outside
+  Nextcloud — no session or cookies required. Get your token from
+  *Settings → External Access*.
+
+Full endpoint list, request/response shapes, and integration examples
+(including a ready-to-use spec for building your own client) are in the
+[admin manual](docs/MANUAL.md).
+
+## Clients
+###Android
+
+A Beta version Android client for FinTrack, built on top of the
+[External entry form & API](#external-entry-form--api).
+
+- 📦 APK (debug build): [FinTrack.v1.1.7.apk](https://github.com/cloudsliberty/fintrack-android/releases/download/v1.1.7/FinTrack.v1.1.7.apk)
+
+- 📱 Project / source: [github.com/cloudsliberty/fintrack-android](https://github.com/cloudsliberty/fintrack-android)
+
+###PWA (Installable Progressive Web App)
+Install FinTrack on your desktop or mobile device for quick access and an app-like experience.
+
+- 📦 PWA page - [https://cloudsliberty.github.io/fintrack-PWA/](https://cloudsliberty.github.io/fintrack-PWA/)
+
+- 📱 Project / source: [https://github.com/cloudsliberty/fintrack-PWA](https://github.com/cloudsliberty/fintrack-PWA)
+
+## Data & privacy
+
+All data lives in your own Nextcloud database — accounts, transactions,
+budgets, and settings never leave your server. The only optional external
+calls FinTrack makes are to Frankfurter and/or exchangerate.host for
+live exchange rates, and only if you enable online rate lookups;
+everything else works fully offline within your Nextcloud instance.
+
+## Requirements
+
+- Nextcloud **32**
+- PHP as required by your Nextcloud installation
+- No additional services required (exchange-rate API is optional)
+
+## Contributing
+
+Issues and pull requests are welcome at
+[github.com/cloudsliberty/fintrack](https://github.com/cloudsliberty/fintrack/issues).
+
+## Support
+
+- 🐛 [Report a bug](https://github.com/cloudsliberty/fintrack/issues)
+- 📖 [Admin manual](docs/MANUAL.md)
+- ☕ [Donate](https://www.paypal.me/jaleel1618) if FinTrack is useful to you
+
+## License
+
+[AGPL-3.0](LICENSE) — © Abdul Jaleel Adenpulan
