@@ -5,12 +5,14 @@
 // (login name + app password) on every subsequent request — see the "Internal REST API" and
 // "Public/External API" sections of the FinTrack manual.
 //
-// IMPORTANT — CORS: this API is designed for same-origin/session use inside Nextcloud's own page
-// shell. Calling it from a separately-hosted PWA is a genuinely cross-origin request, and Nextcloud
-// does not send permissive CORS headers by default. For this PWA to reach your server you'll
-// likely need to either host it on the same origin as Nextcloud (e.g. a static path behind the
-// same reverse proxy) or add CORS headers for this PWA's origin on your web server in front of
-// Nextcloud. See README.md.
+// CORS: Nextcloud's core Login Flow v2 endpoints (/index.php/login/v2) can't carry CORS headers
+// (that's core code, not the FinTrack app's — the app can't add headers to a route it doesn't
+// own). To make Login Flow v2 reachable from a browser-hosted PWA at all, this client calls it
+// through a small proxy under FinTrack's OWN routes instead — see LoginProxyController in the
+// Nextcloud app (lib/Controller/LoginProxyController.php) — which relays the two calls
+// server-side (no browser involved server-to-server, so no CORS applies there) and adds
+// #[CORS] on its own route, which the app CAN do. The rest of the API (api/..., external/...)
+// still needs #[CORS] added directly on FinTrack's existing controllers — see README.md.
 
 const FT_API = (() => {
   function normalizeServer(url) {
@@ -18,22 +20,24 @@ const FT_API = (() => {
   }
 
   async function initLoginFlow(serverUrl) {
-    const res = await fetch(`${normalizeServer(serverUrl)}/index.php/login/v2`, {
+    const res = await fetch(`${normalizeServer(serverUrl)}/index.php/apps/fintrack/login-proxy/init`, {
       method: 'POST',
+      mode: 'cors',
       headers: { 'OCS-APIREQUEST': 'true' }
     });
-    if (!res.ok) throw new Error(`Could not start login (HTTP ${res.status}). Check the server address.`);
+    if (!res.ok) throw new Error(`Could not start login (HTTP ${res.status}). Check the server address, and that LoginProxyController is installed — see README.md.`);
     return res.json(); // { poll: { token, endpoint }, login: "https://.../login/v2/flow/..." }
   }
 
-  /** Polls once. Returns null while the person hasn't finished logging in yet in the opened tab, or the credentials once they have. */
-  async function pollLogin(pollEndpoint, pollToken) {
-    const res = await fetch(pollEndpoint, {
+  /** Polls once, through the same server-side proxy. Returns null while pending, or credentials once the person has finished logging in. */
+  async function pollLogin(pollEndpoint, pollToken, serverUrl) {
+    const res = await fetch(`${normalizeServer(serverUrl)}/index.php/apps/fintrack/login-proxy/poll`, {
       method: 'POST',
+      mode: 'cors',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'OCS-APIREQUEST': 'true' },
-      body: `token=${encodeURIComponent(pollToken)}`
+      body: `endpoint=${encodeURIComponent(pollEndpoint)}&token=${encodeURIComponent(pollToken)}`
     });
-    if (res.status === 404) return null; // not completed yet
+    if (res.status === 202) return null; // not completed yet
     if (!res.ok) throw new Error(`Login poll failed (HTTP ${res.status}).`);
     const data = await res.json(); // { server, loginName, appPassword }
     return { serverUrl: normalizeServer(data.server), loginName: data.loginName, appPassword: data.appPassword };
@@ -54,11 +58,15 @@ const FT_API = (() => {
     });
     if (!res.ok) {
       let message = `HTTP ${res.status}`;
+      let errorBody = null;
       try {
-        const errJson = await res.json();
-        if (errJson && errJson.error) message = errJson.error;
+        errorBody = await res.json();
+        if (errorBody && errorBody.error) message = errorBody.error;
       } catch (_) { /* body wasn't JSON */ }
-      throw new Error(message);
+      const err = new Error(message);
+      err.status = res.status;
+      err.body = errorBody;
+      throw err;
     }
     if (res.status === 204) return null;
     const text = await res.text();
@@ -128,6 +136,15 @@ const FT_API = (() => {
     saveTags: (s, tags) => request(s, 'POST', 'api/tags', { tags }),
     getToken: (s) => request(s, 'GET', 'api/token'),
     regenerateToken: (s) => request(s, 'POST', 'api/token/regenerate'),
+
+    // ── Pin Lock (the same "Settings → Pin Lock" the main Nextcloud app uses — this PWA defers to it entirely rather than keeping a separate lock) ──
+    getLockStatus: (s) => request(s, 'GET', 'api/lock/status'),
+    setupLock: (s, body) => request(s, 'POST', 'api/lock/setup', body),
+    disableLock: (s, body) => request(s, 'POST', 'api/lock/disable', body),
+    verifyLock: (s, password) => request(s, 'POST', 'api/lock/verify', { password }),
+    getLockResetQuestion: (s) => request(s, 'GET', 'api/lock/reset-question'),
+    verifyLockResetAnswer: (s, answer) => request(s, 'POST', 'api/lock/reset-verify', { answer }),
+    requestAdminLockReset: (s) => request(s, 'POST', 'api/lock/request-admin-reset'),
 
     // ── External / token-authenticated API (for the External API settings page) ──
     externalGetAccounts: (s, token) => request(s, 'GET', `external/accounts?token=${encodeURIComponent(token)}`),

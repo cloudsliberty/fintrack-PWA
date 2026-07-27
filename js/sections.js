@@ -579,6 +579,13 @@ ROUTE_RENDERERS.settings = async function (content) {
   try {
     const { data: settings } = await cachedLoad('settings', () => FT_API.getSettings(session()));
     const identity = await FT_PIN.getIdentity(FT_APP.currentIdentityId);
+    let lockStatus;
+    try {
+      lockStatus = await FT_API.getLockStatus(session());
+      await FT_DB.saveIdentity({ ...identity, cachedLockStatus: lockStatus });
+    } catch (err) {
+      lockStatus = identity.cachedLockStatus || { enabled: false, timeoutMinutes: 10 };
+    }
 
     content.replaceChildren(
       h('div', { class: 'section' }, [
@@ -596,16 +603,17 @@ ROUTE_RENDERERS.settings = async function (content) {
         ]),
 
         h('div', { class: 'card' }, [
-          h('h4', {}, 'PIN Lock'),
-          identity.pinEnabled
+          h('h4', {}, 'Pin Lock'),
+          h('p', { class: 'muted small' }, 'This is the same Pin Lock as the main FinTrack app\'s Settings — changes here apply everywhere, not just in this PWA.'),
+          lockStatus.enabled
             ? h('div', {}, [
-                h('p', { class: 'muted' }, `Enabled — asks for your PIN every time you open FinTrack, and again after ${FT_PIN.timeoutMinutes(identity)} minutes in the background.`),
+                h('p', { class: 'muted' }, `Enabled — asks for your PIN every time FinTrack opens, and again after ${lockStatus.timeoutMinutes} minutes in the background.`),
                 h('button', { class: 'ft-btn ft-btn-outline', onclick: () => openPinChangeForm(identity, content) }, 'Change PIN'),
                 h('button', { class: 'ft-btn ft-btn-outline', onclick: () => openPinDisableForm(identity, content) }, 'Disable')
               ])
             : h('div', {}, [
-                h('p', { class: 'muted' }, 'Not enabled (unusual — normally required on first login).'),
-                h('button', { class: 'ft-btn ft-btn-primary', onclick: () => renderPinSetup(identity, true) }, 'Enable PIN Lock')
+                h('p', { class: 'muted' }, 'Not enabled.'),
+                h('button', { class: 'ft-btn ft-btn-primary', onclick: () => openPinChangeForm(identity, content, true) }, 'Enable Pin Lock')
               ])
         ]),
 
@@ -632,24 +640,24 @@ ROUTE_RENDERERS.settings = async function (content) {
   }
 };
 
-function openPinChangeForm(identity, content) {
+function openPinChangeForm(identity, content, isFirstSetup = false) {
+  const fields = [
+    ...(isFirstSetup ? [] : [{ key: 'currentPassword', label: 'Current PIN', type: 'password', required: true }]),
+    { key: 'pin1', label: 'New PIN (4–6 digits)', type: 'password' },
+    { key: 'pin2', label: 'Confirm PIN', type: 'password' },
+    { key: 'timeoutMinutes', label: 'Re-lock after (minutes)', type: 'select', options: [{ value: 1, label: '1 minute' }, { value: 5, label: '5 minutes' }, { value: 10, label: '10 minutes' }, { value: 15, label: '15 minutes' }, { value: 30, label: '30 minutes' }], default: 10 }
+  ];
   openFormModal({
-    title: 'Change PIN',
-    fields: [
-      { key: 'pin1', label: 'New PIN (4–6 digits)', type: 'password' },
-      { key: 'pin2', label: 'Confirm PIN', type: 'password' },
-      { key: 'timeoutMinutes', label: 'Re-lock after (minutes)', type: 'select', options: [{ value: 0, label: 'Immediately' }, { value: 1, label: '1 minute' }, { value: 5, label: '5 minutes' }, { value: 15, label: '15 minutes' }, { value: 30, label: '30 minutes' }], default: FT_PIN.timeoutMinutes(identity) }
-    ],
+    title: isFirstSetup ? 'Enable Pin Lock' : 'Change PIN',
+    fields,
     onSubmit: async (values) => {
-      if (!/^\d{4,6}$/.test(values.pin1) || values.pin1 !== values.pin2) throw new Error("PINs must match and be 4–6 digits.");
-      const oldKey = FT_PIN.currentKey(identity.id);
-      const session_ = await FT_DB.getDecrypted(identity.id, 'secure', 'session', oldKey);
-      const pinFields = await FT_PIN.buildPinFields(values.pin1, Number(values.timeoutMinutes));
-      const updated = { ...identity, ...pinFields };
-      await FT_DB.saveIdentity(updated);
-      await FT_PIN.unlockWithNewPin(identity.id, values.pin1, pinFields.encSalt);
-      if (session_) await FT_DB.putEncrypted(identity.id, 'secure', 'session', FT_PIN.currentKey(identity.id), session_);
-      toast('PIN updated');
+      if (!/^\d{4,6}$/.test(values.pin1) || values.pin1 !== values.pin2) throw new Error('PINs must match and be 4–6 digits.');
+      if (isFirstSetup) {
+        await FT_PIN.setupNewPin(identity.id, values.pin1, Number(values.timeoutMinutes), session());
+      } else {
+        await FT_PIN.changePin(identity.id, values.currentPassword, values.pin1, Number(values.timeoutMinutes), session());
+      }
+      toast(isFirstSetup ? 'Pin Lock enabled' : 'PIN updated');
       ROUTE_RENDERERS.settings(content);
     }
   });
@@ -657,13 +665,11 @@ function openPinChangeForm(identity, content) {
 
 function openPinDisableForm(identity, content) {
   openFormModal({
-    title: 'Disable PIN Lock',
+    title: 'Disable Pin Lock',
     fields: [{ key: 'pin', label: 'Current PIN', type: 'password', required: true }],
     onSubmit: async (values) => {
-      const ok = await FT_PIN.verifyAndUnlock(identity.id, values.pin);
-      if (!ok) throw new Error('Incorrect PIN.');
-      await FT_DB.saveIdentity({ ...identity, pinEnabled: false });
-      toast('PIN Lock disabled — local data is no longer encrypted with a PIN-derived key.');
+      await FT_API.disableLock(session(), { currentPassword: values.pin });
+      toast('Pin Lock disabled. This device will no longer ask for a PIN — local data stays encrypted under the last PIN used until you log out.');
       ROUTE_RENDERERS.settings(content);
     }
   });

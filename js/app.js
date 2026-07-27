@@ -115,12 +115,16 @@ async function bootstrap() {
 
   FT_APP.currentIdentityId = lastIdentityId;
   const identity = identities.find((i) => i.id === lastIdentityId);
-  if (FT_PIN.isEnabled(identity)) {
+  if (identity.encSalt) {
+    // Every fresh page load always re-asks for the PIN, full stop — the encryption key has to be
+    // re-derived from it every time (nothing sensitive is ever kept in memory across a reload).
+    // The timeout-aware "don't re-ask if only briefly backgrounded" leniency (isLockRequiredNow)
+    // only matters for an already-unlocked warm session resuming from visibilitychange, not this.
     renderPinUnlock(identity);
   } else {
-    // No PIN configured (shouldn't normally happen — PIN setup is mandatory on first login —
-    // but handle gracefully rather than getting stuck).
-    renderPinSetup(identity, /*mandatory*/ true);
+    // No local record for this identity at all (e.g. cleared storage, or login succeeded but Pin
+    // Lock setup was never finished) — needs a fresh login to re-establish it.
+    renderLogin(identities);
   }
 }
 
@@ -152,9 +156,9 @@ function renderLogin(identities) {
     if (!serverUrl) return;
     statusEl.textContent = 'Starting login…';
     try {
-      // This is Nextcloud's official Login Flow v2 (the same protocol the Android app uses):
-      // POST /index.php/login/v2 -> open the returned `login` URL for the person to authenticate
-      // -> poll the returned `poll.endpoint` with `poll.token` until it returns the app password.
+      // This is Nextcloud's official Login Flow v2 (the same protocol the Android app uses),
+      // relayed through FinTrack's own login-proxy routes so it's reachable cross-origin — see
+      // LoginProxyController in the Nextcloud app.
       const flow = await FT_API.initLoginFlow(serverUrl);
       const popup = window.open(flow.login, '_blank', 'noopener');
       statusEl.replaceChildren(
@@ -166,7 +170,7 @@ function renderLogin(identities) {
         h('br'),
         h('button', { class: 'ft-btn ft-btn-text', id: 'cancel-login-btn', style: 'margin-top:8px' }, 'Cancel')
       );
-      const stopPolling = pollForLogin(flow.poll.endpoint, flow.poll.token, statusEl);
+      const stopPolling = pollForLogin(flow.poll.endpoint, flow.poll.token, serverUrl, statusEl);
       document.getElementById('cancel-login-btn').addEventListener('click', () => {
         stopPolling();
         statusEl.textContent = '';
@@ -180,17 +184,16 @@ function renderLogin(identities) {
 async function switchIdentity(identity) {
   FT_APP.currentIdentityId = identity.id;
   await FT_DB.setMeta('lastIdentityId', identity.id);
-  if (FT_PIN.isEnabled(identity)) renderPinUnlock(identity);
-  else renderPinSetup(identity, true);
+  renderPinUnlock(identity);
 }
 
-function pollForLogin(endpoint, token, statusEl) {
+function pollForLogin(endpoint, token, serverUrl, statusEl) {
   const intervalId = setInterval(async () => {
     try {
-      const creds = await FT_API.pollLogin(endpoint, token);
+      const creds = await FT_API.pollLogin(endpoint, token, serverUrl);
       if (!creds) return; // still pending
       clearInterval(intervalId);
-      statusEl.textContent = 'Signed in! Setting up this device…';
+      statusEl.textContent = 'Signed in! Checking Pin Lock…';
       await onLoginSuccess(creds);
     } catch (err) {
       clearInterval(intervalId);
@@ -210,38 +213,48 @@ async function onLoginSuccess(creds) {
   FT_APP.currentIdentityId = identityId;
   FT_APP.currentSession = creds;
   await FT_DB.setMeta('lastIdentityId', identityId);
+  await FT_DB.saveIdentity({ id: identityId, serverUrl: creds.serverUrl, loginName: creds.loginName, encSalt: existing?.encSalt, cachedLockStatus: existing?.cachedLockStatus });
 
-  if (existing && existing.pinEnabled) {
-    // Re-login to an already-set-up identity: keep their PIN, just refresh the stored app
-    // password (it may have been regenerated) once they unlock.
-    await FT_DB.saveIdentity({ ...existing, serverUrl: creds.serverUrl, loginName: creds.loginName });
-    renderPinUnlock(existing, creds);
+  // Always check the server's actual Pin Lock state — never assume based on stale local data.
+  let status;
+  try {
+    status = await FT_API.getLockStatus(creds);
+  } catch (err) {
+    root().replaceChildren(h('div', { class: 'auth-screen' }, [
+      h('p', {}, `Signed in, but couldn't reach FinTrack's API to check Pin Lock status: ${err.message}`),
+      h('button', { class: 'ft-btn ft-btn-primary', onclick: () => onLoginSuccess(creds) }, 'Retry')
+    ]));
+    return;
+  }
+
+  if (status.enabled) {
+    renderPinAdopt({ id: identityId, serverUrl: creds.serverUrl, loginName: creds.loginName }, creds, status);
   } else {
-    await FT_DB.saveIdentity({ id: identityId, serverUrl: creds.serverUrl, loginName: creds.loginName, pinEnabled: false });
-    renderPinSetup({ id: identityId, serverUrl: creds.serverUrl, loginName: creds.loginName }, true, creds);
+    renderPinSetup({ id: identityId, serverUrl: creds.serverUrl, loginName: creds.loginName }, creds);
   }
 }
 
-function renderPinSetup(identity, mandatory, pendingCreds) {
+/** Server has NO Pin Lock configured yet for this Nextcloud account — offer to create one (same as Settings -> Pin Lock in the main app). */
+function renderPinSetup(identity, session) {
   root().replaceChildren(
     h('div', { class: 'auth-screen' }, [
       h('img', { src: 'icons/icon-192.png', class: 'auth-logo', alt: 'FinTrack' }),
       h('h1', {}, 'FinTrack'),
       h('p', { class: 'muted' }, `Version ${FT_VERSION}`),
-      h('h2', { style: 'margin-top:24px' }, 'Set up a PIN'),
-      h('p', { class: 'muted' }, 'This PIN protects FinTrack on this device and encrypts everything stored locally. You\'ll need it every time you open the app.'),
+      h('h2', { style: 'margin-top:24px' }, 'Set up Pin Lock'),
+      h('p', { class: 'muted' }, "This is the same Pin Lock as FinTrack's Settings in the main app — the PIN you set here works everywhere, and protects everything stored on this device too."),
       h('input', { id: 'pin1', type: 'password', inputmode: 'numeric', maxlength: '6', placeholder: 'New PIN (4–6 digits)', class: 'ft-input' }),
       h('input', { id: 'pin2', type: 'password', inputmode: 'numeric', maxlength: '6', placeholder: 'Confirm PIN', class: 'ft-input' }),
       h('label', { class: 'ft-field-label' }, 'Re-lock after (minutes in background)'),
       h('select', { id: 'pin-timeout', class: 'ft-input' }, [
-        h('option', { value: '0' }, 'Immediately'),
         h('option', { value: '1' }, '1 minute'),
-        h('option', { value: '5', selected: true }, '5 minutes'),
+        h('option', { value: '5' }, '5 minutes'),
+        h('option', { value: '10', selected: true }, '10 minutes'),
         h('option', { value: '15' }, '15 minutes'),
         h('option', { value: '30' }, '30 minutes')
       ]),
       h('div', { id: 'pin-setup-error', class: 'ft-error' }),
-      h('button', { id: 'pin-setup-btn', class: 'ft-btn ft-btn-primary' }, 'Enable PIN & Continue')
+      h('button', { id: 'pin-setup-btn', class: 'ft-btn ft-btn-primary' }, 'Enable Pin Lock & Continue')
     ])
   );
 
@@ -252,22 +265,48 @@ function renderPinSetup(identity, mandatory, pendingCreds) {
     const errEl = document.getElementById('pin-setup-error');
     if (!/^\d{4,6}$/.test(pin1)) { errEl.textContent = 'PIN must be 4–6 digits.'; return; }
     if (pin1 !== pin2) { errEl.textContent = "PINs don't match."; return; }
-
-    const pinFields = await FT_PIN.buildPinFields(pin1, timeoutMinutes);
-    const record = { id: identity.id, serverUrl: identity.serverUrl, loginName: identity.loginName, ...pinFields };
-    await FT_DB.saveIdentity(record);
-    await FT_PIN.unlockWithNewPin(identity.id, pin1, pinFields.encSalt);
-
-    const creds = pendingCreds || FT_APP.currentSession;
-    if (creds) {
-      await FT_DB.putEncrypted(identity.id, 'secure', 'session', FT_PIN.currentKey(identity.id), creds);
-      FT_APP.currentSession = creds;
+    try {
+      await FT_PIN.setupNewPin(identity.id, pin1, timeoutMinutes, session);
+      FT_APP.currentSession = session;
+      enterApp();
+    } catch (err) {
+      errEl.textContent = err.message || 'Could not set up Pin Lock.';
     }
-    enterApp();
   });
 }
 
-function renderPinUnlock(identity, pendingCreds) {
+/** Server already HAS a Pin Lock configured (set up in the main app, or another device) — confirm it, then adopt it locally. */
+function renderPinAdopt(identity, session, status) {
+  root().replaceChildren(
+    h('div', { class: 'auth-screen' }, [
+      h('img', { src: 'icons/icon-192.png', class: 'auth-logo', alt: 'FinTrack' }),
+      h('h1', {}, 'FinTrack'),
+      h('p', { class: 'muted' }, `Version ${FT_VERSION}`),
+      h('h2', { style: 'margin-top:24px' }, 'Enter your Pin Lock PIN'),
+      h('p', { class: 'muted' }, `${identity.loginName} @ ${identity.serverUrl.replace(/^https?:\/\//, '')} already has Pin Lock enabled (re-locks after ${status.timeoutMinutes} min). Enter it to set this device up too.`),
+      h('input', { id: 'pin-adopt', type: 'password', inputmode: 'numeric', maxlength: '6', placeholder: 'PIN', class: 'ft-input', autofocus: true }),
+      h('div', { id: 'pin-adopt-error', class: 'ft-error' }),
+      h('button', { id: 'pin-adopt-btn', class: 'ft-btn ft-btn-primary' }, 'Confirm')
+    ])
+  );
+
+  async function tryAdopt() {
+    const pin = document.getElementById('pin-adopt').value;
+    const errEl = document.getElementById('pin-adopt-error');
+    try {
+      await FT_PIN.adoptExistingPin(identity.id, pin, session);
+      FT_APP.currentSession = session;
+      enterApp();
+    } catch (err) {
+      errEl.textContent = err.status === 423 ? (err.message || 'Too many attempts') : 'Incorrect PIN';
+      document.getElementById('pin-adopt').value = '';
+    }
+  }
+  document.getElementById('pin-adopt-btn').addEventListener('click', tryAdopt);
+  document.getElementById('pin-adopt').addEventListener('keydown', (e) => { if (e.key === 'Enter') tryAdopt(); });
+}
+
+function renderPinUnlock(identity) {
   root().replaceChildren(
     h('div', { class: 'auth-screen' }, [
       h('img', { src: 'icons/icon-192.png', class: 'auth-logo', alt: 'FinTrack' }),
@@ -286,14 +325,22 @@ function renderPinUnlock(identity, pendingCreds) {
   async function tryUnlock() {
     const pin = document.getElementById('pin-unlock').value;
     const errEl = document.getElementById('pin-unlock-error');
-    const ok = await FT_PIN.verifyAndUnlock(identity.id, pin);
-    if (!ok) { errEl.textContent = 'Incorrect PIN'; document.getElementById('pin-unlock').value = ''; return; }
-    if (pendingCreds) {
-      await FT_DB.putEncrypted(identity.id, 'secure', 'session', FT_PIN.currentKey(identity.id), pendingCreds);
-      FT_APP.currentSession = pendingCreds;
-    } else {
-      FT_APP.currentSession = await FT_DB.getDecrypted(identity.id, 'secure', 'session', FT_PIN.currentKey(identity.id));
+    const btn = document.getElementById('pin-unlock-btn');
+    btn.disabled = true;
+    const result = await FT_PIN.tryUnlock(identity.id, pin);
+    btn.disabled = false;
+    if (!result.ok) {
+      errEl.textContent = result.lockedUntil
+        ? `${result.error} (try again after ${new Date(result.lockedUntil * 1000).toLocaleTimeString()})`
+        : result.error;
+      document.getElementById('pin-unlock').value = '';
+      if (result.staleDevice) {
+        setTimeout(async () => { await logout(); }, 2500);
+      }
+      return;
     }
+    FT_APP.currentSession = await FT_DB.getDecrypted(identity.id, 'secure', 'session', FT_PIN.currentKey(identity.id));
+    if (result.offline) toast('Offline — unlocked with your last verified PIN.');
     enterApp();
   }
 
@@ -305,7 +352,7 @@ function renderPinUnlock(identity, pendingCreds) {
     renderLogin(await FT_DB.listIdentities());
   });
   document.getElementById('forgot-pin-btn').addEventListener('click', async () => {
-    if (!confirm('This removes all locally cached data for this account from this device. You will need to log in again. Continue?')) return;
+    if (!confirm('This removes all locally cached data for this account from this device (including its local copy of the Pin Lock check). Your Pin Lock itself stays enabled on the server — you\'ll confirm it again next time you log in here. Continue?')) return;
     await FT_DB.wipeIdentityData(identity.id);
     await FT_DB.deleteIdentity(identity.id);
     await FT_DB.setMeta('lastIdentityId', null);
@@ -487,5 +534,18 @@ function confirmDialog(message, onConfirm) {
   ]);
   const overlay = openModal(body);
 }
+
+// Re-lock a live, already-unlocked session if it's been hidden longer than the server-configured
+// timeout — without this, the timeout only ever took effect across a full page reload.
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible' || !FT_APP.currentIdentityId || !FT_APP.currentSession) return;
+  const required = await FT_PIN.isLockRequiredNow(FT_APP.currentIdentityId);
+  if (required) {
+    const identity = await FT_PIN.getIdentity(FT_APP.currentIdentityId);
+    FT_PIN.lock();
+    FT_APP.currentSession = null;
+    renderPinUnlock(identity);
+  }
+});
 
 window.addEventListener('DOMContentLoaded', bootstrap);
